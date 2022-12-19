@@ -3,26 +3,36 @@ pragma solidity ^0.8.13;
 
 import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "./interfaces/IERC2981.sol";
 
+error Marketplace__ItemNotForSale(address nftAddress, uint256 tokenId);
+error Marketplace__NotListed(address nftAddress, uint256 tokenId);
+error Marketplace__AlreadyListed(address nftAddress, uint256 tokenId);
+error Marketplace__NoProceeds();
+error Marketplace__NoRoyalty();
+error Marketplace__NotOwner();
+error Marketplace__NotApprovedForMarketplace();
+error Marketplace__PriceMustBeAboveZero();
+error Marketplace__TransferFailed();
 error Marketplace__PriceNotMet(
     address nftAddress,
     uint256 tokenId,
     uint256 price
 );
-error Marketplace__ItemNotForSale(address nftAddress, uint256 tokenId);
-error Marketplace__NotListed(address nftAddress, uint256 tokenId);
-error Marketplace__AlreadyListed(address nftAddress, uint256 tokenId);
-error Marketplace__NoProceeds();
-error Marketplace__NotOwner();
-error Marketplace__NotApprovedForMarketplace();
-error Marketplace__PriceMustBeAboveZero();
-error Marketplace__TransferFailed();
 
 contract Marketplace is ReentrancyGuard {
+    bytes4 private constant _INTERFACE_ID_ERC2981 = 0x2a55205a;
+
+    mapping(address => mapping(uint256 => Listing)) private s_listings;
+    mapping(address => uint256) private s_proceeds;
+    mapping(address => uint256) private s_royalties;
+
     struct Listing {
         uint256 price;
         address seller;
     }
+
+    event RoyaltiesPaid(uint256 tokenId, uint256 value);
 
     event ItemListed(
         address indexed seller,
@@ -43,9 +53,6 @@ contract Marketplace is ReentrancyGuard {
         uint256 indexed tokenId,
         uint256 price
     );
-
-    mapping(address => mapping(uint256 => Listing)) private s_listings;
-    mapping(address => uint256) private s_proceeds;
 
     modifier notListed(
         address nftAddress,
@@ -78,6 +85,44 @@ contract Marketplace is ReentrancyGuard {
             revert Marketplace__NotOwner();
         }
         _;
+    }
+
+    function _checkRoyalties(address _contract) internal view returns (bool) {
+        bool success = IERC2981(_contract).supportsInterface(
+            _INTERFACE_ID_ERC2981
+        );
+        return success;
+    }
+
+    function _deduceRoyalties(
+        uint256 tokenId,
+        address tokenAddress,
+        uint256 grossSaleValue
+    ) internal returns (uint256 netSaleAmount) {
+        // Get amount of royalties to pays and recipient
+        (address royaltiesReceiver, uint256 royaltiesAmount) = IERC2981(
+            tokenAddress
+        ).royaltyInfo(tokenId, grossSaleValue);
+
+        // Deduce royalties from sale value
+        uint256 netSaleValue = grossSaleValue - royaltiesAmount;
+
+        // Transfer royalties to rightholder if not zero
+        if (royaltiesAmount > 0) {
+            // (bool success, ) = payable(royaltiesReceiver).call{
+            //     value: royaltiesAmount
+            // }("");
+            // if (!success) {
+            //     revert Marketplace__TransferFailed();
+            // }
+
+            s_royalties[royaltiesReceiver] += royaltiesAmount;
+        }
+
+        // Broadcast royalties payment
+        emit RoyaltiesPaid(tokenId, royaltiesAmount);
+
+        return netSaleValue;
     }
 
     function listItem(
@@ -123,9 +168,16 @@ contract Marketplace is ReentrancyGuard {
                 listedItem.price
             );
         }
-        s_proceeds[listedItem.seller] += msg.value;
+        uint256 saleValue = msg.value;
+
+        if (_checkRoyalties(nftAddress)) {
+            saleValue = _deduceRoyalties(tokenId, nftAddress, saleValue);
+        }
+
+        s_proceeds[listedItem.seller] += saleValue;
 
         delete (s_listings[nftAddress][tokenId]);
+
         IERC721(nftAddress).safeTransferFrom(
             listedItem.seller,
             msg.sender,
@@ -160,12 +212,32 @@ contract Marketplace is ReentrancyGuard {
         }
     }
 
+    function withdrawRoyalties() external {
+        uint256 royalty = s_royalties[msg.sender];
+        if (royalty <= 0) {
+            revert Marketplace__NoRoyalty();
+        }
+        s_royalties[msg.sender] = 0;
+        (bool success, ) = payable(msg.sender).call{value: royalty}("");
+        if (!success) {
+            revert Marketplace__TransferFailed();
+        }
+    }
+
     function getListing(address nftAddress, uint256 tokenId)
         external
         view
         returns (Listing memory)
     {
         return s_listings[nftAddress][tokenId];
+    }
+
+    function getRoyalties(address royaltiesReceiver)
+        external
+        view
+        returns (uint256)
+    {
+        return s_royalties[royaltiesReceiver];
     }
 
     function getProceeds(address seller) external view returns (uint256) {
