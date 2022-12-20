@@ -32,7 +32,11 @@ contract Marketplace is ReentrancyGuard {
         address seller;
     }
 
-    event RoyaltiesPaid(uint256 tokenId, uint256 value);
+    event RoyaltiesPaid(
+        uint256 indexed tokenId,
+        uint256 indexed value,
+        address indexed nftAddress
+    );
 
     event ItemListed(
         address indexed seller,
@@ -120,7 +124,7 @@ contract Marketplace is ReentrancyGuard {
         }
 
         // Broadcast royalties payment
-        emit RoyaltiesPaid(tokenId, royaltiesAmount);
+        emit RoyaltiesPaid(tokenId, royaltiesAmount, tokenAddress);
 
         return netSaleValue;
     }

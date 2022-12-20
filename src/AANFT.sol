@@ -58,4 +58,8 @@ contract AANFT is ERC721URIStorage, ERC2981, Ownable {
 
         return tokenId;
     }
+
+    function getCountOfSupply() public view returns (Counters.Counter memory) {
+        return _tokenIds;
+    }
 }
